@@ -1,0 +1,1038 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Amazon Bedrock Agents and SlackIntegration",
+    
+    "Parameters": {
+        "SlackBotToken": {
+            "Type": "String",
+            "Description": "Slack Bot User OAuth Token",
+            "NoEcho": true
+        },
+        "SlackSigningSecret": {
+            "Type": "String",
+            "Description": "Slack Signing Secret for request validation",
+            "NoEcho": true
+        },
+        "BedrockAgentId": {
+            "Type": "String",
+            "Description": "ID of your existing Bedrock Agent"
+        },
+        "BedrockAgentAliasId": {
+            "Type": "String",
+            "Description": "Alias ID of your existing Bedrock Agent",
+            "Default": "TSTALIASID"
+        },
+        "SendAgentRationaleToSlack": {
+            "Type": "String",
+            "Description": "Enable Bedrock Agent rationale to be sent to Slack (true/false)",
+            "Default": "false",
+            "AllowedValues": ["true", "false"]
+        }
+    },
+
+    "Resources": {
+        "ProcessingQueue": {
+            "Type": "AWS::SQS::Queue",
+            "Properties": {
+                "QueueName": "ProcessingQueue.fifo",
+                "FifoQueue": true,
+                "DeduplicationScope": "messageGroup",
+                "FifoThroughputLimit": "perMessageGroupId",
+                "VisibilityTimeout": 300,
+                "MessageRetentionPeriod": 1209600,
+                "RedrivePolicy": {
+                    "deadLetterTargetArn": { "Fn::GetAtt": ["DeadLetterQueue", "Arn"] },
+                    "maxReceiveCount": 3
+                }
+            }
+        },
+        "DeadLetterQueue": {
+            "Type": "AWS::SQS::Queue",
+            "Properties": {
+                "QueueName": "ProcessingDLQ.fifo",
+                "FifoQueue": true,
+                "MessageRetentionPeriod": 1209600
+            }
+        },
+        "SlackBotTokenSecret": {
+            "Type": "AWS::SecretsManager::Secret",
+            "Properties": {
+                "SecretString": {
+                    "Fn::Sub": "{\"token\":\"${SlackBotToken}\",\"signingSecret\":\"${SlackSigningSecret}\"}"
+                }
+            },
+            "DeletionPolicy": "Delete"
+        },
+        "MessageVerificationFunctionRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "lambda.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+                ],
+                "Policies": [
+                    {
+                        "PolicyName": "MessageVerificationPolicy",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": "secretsmanager:GetSecretValue",
+                                    "Resource": {
+                                        "Ref": "SlackBotTokenSecret"
+                                    }
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": "lambda:InvokeFunction",
+                                    "Resource": { "Fn::GetAtt": ["SQSIntegrationFunction", "Arn"] }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "MessageVerificationFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Handler": "index.handler",
+                "Role": { "Fn::GetAtt": ["MessageVerificationFunctionRole", "Arn"] },
+                "Code": {
+                    "ZipFile": {
+                        "Fn::Join": [
+                            "\n",
+                            [
+                                "const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');",
+                                "const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');",
+                                "const crypto = require('crypto');",
+                                "",
+                                "const secretsManager = new SecretsManagerClient();",
+                                "const lambda = new LambdaClient();",
+                                "",
+                                "const logger = {",
+                                "    info: (message, ...args) => console.info(message, ...args),",
+                                "    error: (message, ...args) => console.error(message, ...args),",
+                                "    debug: (message, ...args) => console.debug(message, ...args)",
+                                "};",
+                                "",
+                                "async function verifySlackSignature(body, timestamp, signature, signingSecret) {",
+                                "    //logger.info('Verifying Slack signature', {",
+                                "    //    timestamp,",
+                                "    //    signaturePresent: !!signature,",
+                                "    //    bodyLength: body?.length",
+                                "    //});",
+                                "",
+                                "    const baseString = `v0:${timestamp}:${body}`;",
+                                "    const hmac = crypto.createHmac('sha256', signingSecret);",
+                                "    const calculatedSignature = `v0=${hmac.update(baseString).digest('hex')}`;",
+                                "",
+                                "    const signatureBuffer = Buffer.from(signature);",
+                                "    const calculatedBuffer = Buffer.from(calculatedSignature);",
+                                "    if (signatureBuffer.length !== calculatedBuffer.length) {",
+                                "        return false;",
+                                "    }",
+                                "    ",
+                                "    return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(calculatedSignature));",
+                                "}",
+                                "",
+                                "exports.handler = async (event) => {",
+                                "    logger.info('MessageVerificationFunction started', { eventId: event.id });",
+                                "    //logger.debug('Event:', JSON.stringify(event, null, 2));",
+                                "",
+                                "    try {",
+                                "        const headers = event.headers || {};",
+                                "        const body = event.body;",
+                                "        const rawBody = event.rawBody || body;",
+                                "        const parsedBody = typeof body === 'string' ? JSON.parse(body) : body;",
+                                "",
+                                "        if (parsedBody.type === 'url_verification') {",
+                                "            logger.info('Handling URL verification');",
+                                "            return {",
+                                "                statusCode: 200,",
+                                "                headers: { 'Content-Type': 'application/json' },",
+                                "                body: JSON.stringify({ challenge: parsedBody.challenge })",
+                                "            };",
+                                "        }",
+                                "",
+                                "        const slackSignature = headers['X-Slack-Signature'] || headers['x-slack-signature'];",
+                                "        const timestamp = headers['X-Slack-Request-Timestamp'] || headers['x-slack-request-timestamp'];",
+                                "",
+                                "        // Validate headers exist",
+                                "        if (!slackSignature || !timestamp) {",
+                                "            logger.error('Missing required Slack headers');",
+                                "            throw new Error('Invalid request: Missing headers');",
+                                "        }",
+                                "",
+                                "        // Validate timestamp is recent (within 5 minutes)",
+                                "        const now = Math.floor(Date.now() / 1000);",
+                                "        if (Math.abs(now - parseInt(timestamp, 10)) > 300) {",
+                                "            logger.error('Slack timestamp too old');",
+                                "            throw new Error('Invalid request: Expired timestamp');",
+                                "        }",
+                                "",
+                                "        logger.info('Getting secrets');",
+                                "        const secretResponse = await secretsManager.send(",
+                                "            new GetSecretValueCommand({",
+                                "                SecretId: process.env.SLACK_BOT_TOKEN_SECRET",
+                                "            })",
+                                "        );",
+                                "",
+                                "        const secrets = JSON.parse(secretResponse.SecretString);",
+                                "",
+                                "        const isValid = await verifySlackSignature(",
+                                "            rawBody,",
+                                "            timestamp,",
+                                "            slackSignature,",
+                                "            secrets.signingSecret",
+                                "        );",
+                                "",
+                                "        if (!isValid) {",
+                                "            logger.error('Invalid Slack signature');",
+                                "            throw new Error('Invalid Slack signature');",
+                                "        }",
+                                "",
+                                "        logger.info('Signature verified, invoking SQS Integration Function');",
+                                "",
+                                "        // Add token to event for SQS Integration Function",
+                                "        const enrichedEvent = {",
+                                "            ...event,",
+                                "            slackBotToken: secrets.token",
+                                "        };",
+                                "",
+                                "        const invokeParams = {",
+                                "            FunctionName: process.env.SQS_INTEGRATION_FUNCTION,",
+                                "            InvocationType: 'Event',",
+                                "            Payload: JSON.stringify(enrichedEvent)",
+                                "        };",
+                                "",
+                                "        await lambda.send(new InvokeCommand(invokeParams));",
+                                "",
+                                "        logger.info('SQS Integration Function invoked successfully');",
+                                "",
+                                "        return {",
+                                "            statusCode: 200,",
+                                "            body: JSON.stringify({ message: 'Verification successful' })",
+                                "        };",
+                                "    } catch (error) {",
+                                "        logger.error('Error:', error);",
+                                "        return {",
+                                "            statusCode: error.message.includes('Invalid Slack signature') ? 403 : 500,",
+                                "            body: JSON.stringify({ error: error.message })",
+                                "        };",
+                                "    }",
+                                "}"
+                            ]
+                        ]
+                    }
+                },
+                "Runtime": "nodejs20.x",
+                "Timeout": 30,
+                "MemorySize": 256,
+                "Environment": {
+                    "Variables": {
+                        "SLACK_BOT_TOKEN_SECRET": { "Ref": "SlackBotTokenSecret" },
+                        "SQS_INTEGRATION_FUNCTION": { "Ref": "SQSIntegrationFunction" }
+                    }
+                }
+            }
+        },
+        "SQSIntegrationFunctionRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "lambda.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+                ],
+                "Policies": [
+                    {
+                        "PolicyName": "SlackBotPolicy",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "sqs:SendMessage",
+                                        "sqs:DeleteMessage",
+                                        "sqs:GetQueueAttributes",
+                                        "sqs:ReceiveMessage"
+                                    ],
+                                    "Resource": [
+                                        { "Fn::GetAtt": ["ProcessingQueue", "Arn"] },
+                                        { "Fn::GetAtt": ["DeadLetterQueue", "Arn"] }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "SQSIntegrationFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Handler": "index.handler",
+                "Role": {
+                    "Fn::GetAtt": ["SQSIntegrationFunctionRole", "Arn"]
+                },
+                "Code": {
+                    "ZipFile": {
+                        "Fn::Join": [
+                            "\n",
+                            [
+                                "const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');",
+                                "const https = require('https');",
+                                "",
+                                "const sqs = new SQSClient();",
+                                "",
+                                "const logger = {",
+                                "    info: (message, ...args) => console.info(message, ...args),",
+                                "    error: (message, ...args) => console.error(message, ...args),",
+                                "    debug: (message, ...args) => console.debug(message, ...args)",
+                                "};",
+                                "",
+                                "async function sendSlackMessage(channel, text, token, threadTs = null) {",
+                                "    logger.info(`Sending message to channel: ${channel}, thread: ${threadTs || 'new thread'}`);",
+                                "",
+                                "    const data = {",
+                                "        channel,",
+                                "        text,",
+                                "        thread_ts: threadTs,",
+                                "        mrkdwn: true,",
+                                "        parse: 'full'",
+                                "    };",
+                                "",
+                                "    return new Promise((resolve, reject) => {",
+                                "        const req = https.request({",
+                                "            hostname: 'slack.com',",
+                                "            path: '/api/chat.postMessage',",
+                                "            method: 'POST',",
+                                "            headers: {",
+                                "                'Content-Type': 'application/json',",
+                                "                'Authorization': `Bearer ${token}`",
+                                "            }",
+                                "        }, (res) => {",
+                                "            let data = '';",
+                                "            res.on('data', chunk => data += chunk);",
+                                "            res.on('end', () => {",
+                                "                const response = JSON.parse(data);",
+                                "                logger.debug('Slack API response:', response);",
+                                "                if (!response.ok) {",
+                                "                    logger.error('Slack API error:', response);",
+                                "                    reject(new Error(response.error));",
+                                "                    return;",
+                                "                }",
+                                "                resolve(response);",
+                                "            });",
+                                "        });",
+                                "",
+                                "        req.on('error', (error) => {",
+                                "            logger.error('Error sending Slack message:', error);",
+                                "            reject(error);",
+                                "        });",
+                                "",
+                                "        req.write(JSON.stringify(data));",
+                                "        req.end();",
+                                "    });",
+                                "}",
+                                "",
+                                "exports.handler = async (event) => {",
+                                "    logger.info('SQSIntegrationFunction started');",
+                                "    //logger.debug('Event:', JSON.stringify(event, null, 2));",
+                                "",
+                                "    try {",
+                                "        const body = event.body;",
+                                "        const parsedBody = typeof body === 'string' ? JSON.parse(body) : body;",
+                                "        const slackBotToken = event.slackBotToken;",
+                                "",
+                                "        if (parsedBody.event && !parsedBody.event.bot_id) {",
+                                "            logger.info('Processing Slack event');",
+                                "            const { channel, text, thread_ts, ts, client_msg_id } = parsedBody.event;",
+                                "",
+                                "            logger.info('Message details before sending to SQS:', {",
+                                "                channel,",
+                                "                thread_ts,",
+                                "                ts,",
+                                "                messageId: `${channel}:${thread_ts || ts}:${client_msg_id || ''}`,",
+                                "                text: text ? text.substring(0, 100) : 'none'",
+                                "            });",
+                                "",
+                                "            //Check the size of the event parsedBody.event, if the size is bigger that 256kb then send a messsage to slack indicating that the message is too long",
+                                "            if (Buffer.byteLength(JSON.stringify(parsedBody.event), 'utf8') > 256000) {",
+                                "                logger.info('Message too long, sending message to Slack');",
+                                "                await sendSlackMessage(",
+                                "                    channel,",
+                                "                    ':warning: _Message too long to process, please try again with a shorter message._',",
+                                "                    slackBotToken,",
+                                "                    thread_ts || ts",
+                                "                );",
+                                "                return {",
+                                "                    statusCode: 200,",
+                                "                    body: JSON.stringify({ message: 'Message too long' })",
+                                "                };",
+                                "            }",
+                                "",
+                                "            logger.info('Sending message to SQS');",
+                                "            const ackMessage = await sendSlackMessage(",
+                                "                channel,",
+                                "                '🤔 _Processing your request..._',",
+                                "                slackBotToken,",
+                                "                thread_ts || ts",
+                                "            );",
+                                "            await sqs.send(",
+                                "                new SendMessageCommand({",
+                                "                    QueueUrl: process.env.QUEUE_URL,",
+                                "                    MessageBody: JSON.stringify({",
+                                "                        event: parsedBody.event,",
+                                "                        ackMessage: ackMessage,",
+                                "                        slackToken: slackBotToken",
+                                "                    }),",
+                                "                    MessageDeduplicationId: `${channel}:${thread_ts || ts}:${client_msg_id || ''}`,",
+                                "                    MessageGroupId: channel",
+                                "                })",
+                                "            );",
+                                "",
+                                "            logger.info('Successfully sent message to SQS');",
+                                "        } else {",
+                                "            logger.info('Skipped processing: Not a user message or unhandled event type');",
+                                "        }",
+                                "",
+                                "        return {",
+                                "            statusCode: 200,",
+                                "            body: JSON.stringify({ message: 'Processed successfully' })",
+                                "        };",
+                                "    } catch (error) {",
+                                "        logger.error('Error:', error);",
+                                "        return {",
+                                "            statusCode: 500,",
+                                "            body: JSON.stringify({ error: error.message })",
+                                "        };",
+                                "    }",
+                                "}"
+                            ]
+                        ]
+                    }
+                },
+                "Runtime": "nodejs20.x",
+                "Timeout": 30,
+                "MemorySize": 256,
+                "Environment": {
+                    "Variables": {
+                        "QUEUE_URL": { "Ref": "ProcessingQueue" }
+                    }
+                }
+            }
+        },
+        "SlackAPI": {
+            "Type": "AWS::ApiGateway::RestApi",
+            "Properties": {
+                "Name": "SlackBedrockIntegration"
+            }
+        },
+        "SlackEndpoint": {
+            "Type": "AWS::ApiGateway::Resource",
+            "Properties": {
+                "RestApiId": { "Ref": "SlackAPI" },
+                "ParentId": { "Fn::GetAtt": ["SlackAPI", "RootResourceId"] },
+                "PathPart": "slack"
+            }
+        },
+        "SlackMethod": {
+            "Type": "AWS::ApiGateway::Method",
+            "Properties": {
+                "RestApiId": { "Ref": "SlackAPI" },
+                "ResourceId": { "Ref": "SlackEndpoint" },
+                "HttpMethod": "POST",
+                "AuthorizationType": "NONE",
+                "Integration": {
+                    "Type": "AWS",
+                    "IntegrationHttpMethod": "POST",
+                    "Uri": {
+                        "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MessageVerificationFunction.Arn}/invocations"
+                    },
+                    "RequestTemplates": {
+                        "application/json": {
+                            "Fn::Join": [
+                                "",
+                                [
+                                    "{",
+                                    "\"method\": \"$context.httpMethod\",",
+                                    "\"body\" : $input.json('$'),",
+                                    "\"rawBody\": \"$util.escapeJavaScript($input.body)\",",
+                                    "\"headers\": {",
+                                    "#foreach($param in $input.params().header.keySet())",
+                                    "\"$param\": \"$util.escapeJavaScript($input.params().header.get($param))\"",
+                                    "#if($foreach.hasNext),#end",
+                                    "#end",
+                                    "}",
+                                    "}"
+                                ]
+                            ]
+                        }
+                    },
+                    "IntegrationResponses": [
+                        {
+                            "StatusCode": "200",
+                            "ResponseTemplates": {
+                                "application/json": "$input.json('$')"
+                            }
+                        },
+                        {
+                            "StatusCode": "403",
+                            "SelectionPattern": ".*Invalid Slack signature.*",
+                            "ResponseTemplates": {
+                                "application/json": "{\"error\": \"Invalid signature\"}"
+                            }
+                        }
+                    ]
+                },
+                "RequestParameters": {
+                    "method.request.header.X-Slack-Signature": true,
+                    "method.request.header.X-Slack-Request-Timestamp": true
+                },
+                "MethodResponses": [
+                    {
+                        "StatusCode": "200",
+                        "ResponseModels": {
+                            "application/json": "Empty"
+                        }
+                    },
+                    {
+                        "StatusCode": "403",
+                        "ResponseModels": {
+                            "application/json": "Error"
+                        }
+                    }
+                ]
+            }
+        },
+        "ApiDeployment": {
+            "Type": "AWS::ApiGateway::Deployment",
+            "DependsOn": ["SlackMethod"],
+            "Properties": {
+                "RestApiId": { "Ref": "SlackAPI" }
+            }
+        },
+        "ApiStage": {
+            "Type": "AWS::ApiGateway::Stage",
+            "Properties": {
+                "RestApiId": { "Ref": "SlackAPI" },
+                "DeploymentId": { "Ref": "ApiDeployment" },
+                "StageName": "prod"
+            }
+        },
+        "MessageVerificationPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": { "Ref": "MessageVerificationFunction" },
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SlackAPI}/*/*/*"
+                }
+            }
+        },
+        "BedrockAgentsIntegrationFunctionRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "lambda.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+                ],
+                "Policies": [
+                    {
+                        "PolicyName": "ProcessingLambdaPolicy",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "bedrock:InvokeAgent"
+                                    ],
+                                    "Resource": [
+                                        {
+                                            "Fn::Sub": "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:agent-alias/${BedrockAgentId}/*"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "sqs:ReceiveMessage",
+                                        "sqs:DeleteMessage",
+                                        "sqs:GetQueueAttributes"
+                                    ],
+                                    "Resource": [
+                                        { "Fn::GetAtt": ["ProcessingQueue", "Arn"] }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "BedrockAgentsIntegrationFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Handler": "index.handler",
+                "Role": {
+                    "Fn::GetAtt": ["BedrockAgentsIntegrationFunctionRole", "Arn"]
+                },
+                "Code": {
+                    "ZipFile": {
+                        "Fn::Join": [
+                            "\n",
+                            [
+                                "const { BedrockAgentRuntimeClient, InvokeAgentCommand } = require('@aws-sdk/client-bedrock-agent-runtime');",
+                                "const https = require('https');",
+                                "",
+                                "// Client initialization",
+                                "const bedrockAgentClient = new BedrockAgentRuntimeClient();",
+                                "",
+                                "// Logger configuration",
+                                "const logger = {",
+                                "    info: (message, ...args) => console.info(message, ...args),",
+                                "    error: (message, ...args) => console.error(message, ...args),",
+                                "    debug: (message, ...args) => console.debug(message, ...args)",
+                                "};",
+                                "",
+                                "const textUtils = {",
+                                "    // Main function to convert markdown to Slack format",
+                                "    convertMarkdownToSlack(text) {",
+                                "        if (!text) return text;",
+                                "        ",
+                                "        let lines = text.split('\\n');",
+                                "        let inCodeBlock = false;",
+                                "        let formattedLines = lines.map(line => {",
+                                "            // Handle code blocks",
+                                "            if (line.trim().startsWith('```')) {",
+                                "                inCodeBlock = !inCodeBlock;  // Toggle code block state",
+                                "                return line;",
+                                "            }",
+                                "            // Don't format text inside code blocks",
+                                "            if (inCodeBlock) return line;",
+                                "            ",
+                                "            return this.formatLine(line);",
+                                "        });",
+                                "",
+                                "        return this.finalizeText(formattedLines.join('\\n'));",
+                                "    },",
+                                "",
+                                "    // Handles individual line formatting",
+                                "    formatLine(line) {",
+                                "        // Convert headers to bold text",
+                                "        line = line.replace(/^#{1,6}\\s+(.+)$/gm, '*$1*');",
+                                "        // Convert double asterisks to single (bold)",
+                                "        line = line.replace(/\\*\\*(.*?)\\*\\*/g, '*$1*');",
+                                "        // Convert list items to bullet points",
+                                "        line = line.replace(/^[\\*\\-]\\s+(.+)$/gm, '• $1');",
+                                "        // Preserve table formatting",
+                                "        if (line.includes('|')) return line.trim();",
+                                "        // Format blockquotes",
+                                "        line = line.replace(/^>\\s*(.+)$/gm, '>$1');",
+                                "        // Preserve inline code",
+                                "        line = line.replace(/`([^`]+)`/g, '`$1`');",
+                                "        return line;",
+                                "    },",
+                                "",
+                                "    // Clean up the final text",
+                                "    finalizeText(text) {",
+                                "        // Remove excessive newlines",
+                                "        return text.replace(/\\n{3,}/g, '\\n\\n').trim();",
+                                "    }",
+                                "};",
+                                "",
+                                "",
+                                "// Slack communication handlers",
+                                "const slackClient = {",
+                                "    async sendMessage(channel, text, token, threadTs = null) {",
+                                "        return this.makeSlackRequest('/api/chat.postMessage', {",
+                                "            channel, text, thread_ts: threadTs, mrkdwn: true, parse: 'full'",
+                                "        }, token);",
+                                "    },",
+                                "",
+                                "    async updateMessage(channel, text, token, messageTs, threadTs = null) {",
+                                "        return this.makeSlackRequest('/api/chat.update', {",
+                                "            channel, text, ts: messageTs, thread_ts: threadTs, mrkdwn: true, parse: 'full'",
+                                "        }, token);",
+                                "    },",
+                                "",
+                                "    async makeSlackRequest(path, data, token) {",
+                                "        return new Promise((resolve, reject) => {",
+                                "            const req = https.request({",
+                                "                hostname: 'slack.com',",
+                                "                path,",
+                                "                method: 'POST',",
+                                "                headers: {",
+                                "                    'Content-Type': 'application/json',",
+                                "                    'Authorization': `Bearer ${token}`",
+                                "                }",
+                                "            }, this.handleSlackResponse(resolve, reject));",
+                                "",
+                                "            req.on('error', (error) => {",
+                                "                logger.error(`Error in Slack request to ${path}:`, error);",
+                                "                reject(error);",
+                                "            });",
+                                "",
+                                "            req.write(JSON.stringify(data));",
+                                "            req.end();",
+                                "        });",
+                                "    },",
+                                "",
+                                "    handleSlackResponse(resolve, reject) {",
+                                "        return (res) => {",
+                                "            let data = '';",
+                                "            res.on('data', chunk => data += chunk);",
+                                "            res.on('end', () => {",
+                                "                const response = JSON.parse(data);",
+                                "                logger.debug('Slack API response:', response);",
+                                "                if (!response.ok) {",
+                                "                    logger.error('Slack API error:', response);",
+                                "                    reject(new Error(response.error));",
+                                "                    return;",
+                                "                }",
+                                "                resolve(response);",
+                                "            });",
+                                "        };",
+                                "    }",
+                                "};",
+                                "",
+                                "// Bedrock interaction handlers",
+                                "const bedrockHandler = {",
+                                "    async invokeAgent(sessionId, inputText) {",
+                                "        const bedrockInput = {",
+                                "            agentId: process.env.BEDROCK_AGENT_ID,",
+                                "            agentAliasId: process.env.BEDROCK_AGENT_ALIAS_ID,",
+                                "            sessionId,",
+                                "            inputText: inputText.replace(/<@[A-Z0-9]+>/g, '').trim(),",
+                                "            endSession: false,",
+                                "            enableTrace: true",
+                                "        };",
+                                "",
+                                "        const command = new InvokeAgentCommand(bedrockInput);",
+                                "        return bedrockAgentClient.send(command);",
+                                "    },",
+                                "",
+                                "    async processResponse(response, channel, slackToken, threadTs, processingMessageId) {",
+                                "        let completion = '';",
+                                "        let tasksCompleted = 0;",
+                                "",
+                                "        for await (const chunkEvent of response.completion) {",
+                                "            const result = await this.processChunkEvent(",
+                                "                chunkEvent, ",
+                                "                channel, ",
+                                "                slackToken, ",
+                                "                threadTs, ",
+                                "                tasksCompleted",
+                                "            );",
+                                "            completion += result.completionText || '';",
+                                "            tasksCompleted = result.tasksCompleted;",
+                                "        }",
+                                "",
+                                "        if (!completion) {",
+                                "            throw new Error('No response received from the agent');",
+                                "        }",
+                                "",
+                                "        return { completion, tasksCompleted };",
+                                "    },",
+                                "",
+                                "    async processChunkEvent(chunkEvent, channel, slackToken, threadTs, tasksCompleted) {",
+                                "        let completionText = '';",
+                                "",
+                                "        if (chunkEvent.chunk?.bytes) {",
+                                "            const decoder = new TextDecoder();",
+                                "            completionText = decoder.decode(chunkEvent.chunk.bytes);",
+                                "        }",
+                                "",
+                                "        if (chunkEvent.trace?.trace?.failureTrace) {",
+                                "            throw new Error(chunkEvent.trace.trace.failureTrace.failureReason);",
+                                "        }",
+                                "",
+                                "        if (this.shouldStreamRationale(chunkEvent)) {",
+                                "            tasksCompleted++;",
+                                "            await this.handleSendAgentRationaleToSlack(",
+                                "                chunkEvent, ",
+                                "                channel, ",
+                                "                slackToken, ",
+                                "                threadTs, ",
+                                "                tasksCompleted",
+                                "            );",
+                                "        }",
+                                "",
+                                "        return { completionText, tasksCompleted };",
+                                "    },",
+                                "",
+                                "    shouldStreamRationale(chunkEvent) {",
+                                "        return process.env.SEND_AGENT_RATIONALE_TO_SLACK === 'true' && ",
+                                "               chunkEvent.trace?.trace?.orchestrationTrace?.rationale;",
+                                "    },",
+                                "",
+                                "    async handleSendAgentRationaleToSlack(chunkEvent, channel, slackToken, threadTs, tasksCompleted) {",
+                                "        const rationale = chunkEvent.trace.trace.orchestrationTrace.rationale.text;",
+                                "        const formattedRationale = textUtils.convertMarkdownToSlack(rationale);",
+                                "        ",
+                                "        await slackClient.sendMessage(",
+                                "            channel,",
+                                "            `🤔 _Thinking..._ (${tasksCompleted})\\n${formattedRationale}`,",
+                                "            slackToken,",
+                                "            threadTs",
+                                "        );",
+                                "    }",
+                                "};",
+                                "",
+                                "// Helper functions",
+                                "function getSessionId(slackEvent) {",
+                                "    const { channel, thread_ts, ts } = slackEvent;",
+                                "    return thread_ts ? `${channel}-${thread_ts}` : `${channel}-${ts}`;",
+                                "}",
+                                "",
+                                "async function sendFinalResponse(completion, slackEvent, slackToken, processingMessageId) {",
+                                "    const slackFormattedText = textUtils.convertMarkdownToSlack(completion);",
+                                "    const { channel, thread_ts, ts } = slackEvent;",
+                                "",
+                                "    if (process.env.SEND_AGENT_RATIONALE_TO_SLACK === 'true') {",
+                                "        await slackClient.sendMessage(",
+                                "            channel,",
+                                "            slackFormattedText,",
+                                "            slackToken,",
+                                "            thread_ts || ts",
+                                "        );",
+                                "    } else {",
+                                "        await slackClient.updateMessage(",
+                                "            channel,",
+                                "            slackFormattedText,",
+                                "            slackToken,",
+                                "            processingMessageId,",
+                                "            thread_ts || ts",
+                                "        );",
+                                "    }",
+                                "}",
+                                "",
+                                "// Record processing",
+                                "async function processRecord(record) {",
+                                "    try {",
+                                "        logger.info('Processing record:', record.messageId);",
+                                "        const payload = JSON.parse(record.body);",
+                                "        const { event: slackEvent, slackToken, ackMessage } = payload;",
+                                "        const processingMessageId = ackMessage?.ts;",
+                                "",
+                                "        // Validate required fields",
+                                "        if (!slackEvent || !slackToken || !processingMessageId) {",
+                                "            throw new Error('Invalid payload structure: missing required fields');",
+                                "        }",
+                                "",
+                                "        const sessionId = getSessionId(slackEvent);",
+                                "        ",
+                                "        logger.info('Invoking Bedrock Agent:', {",
+                                "            sessionId,",
+                                "            channel: slackEvent.channel,",
+                                "            threadTs: slackEvent.thread_ts || slackEvent.ts",
+                                "        });",
+                                "",
+                                "        const response = await bedrockHandler.invokeAgent(sessionId, slackEvent.text);",
+                                "        ",
+                                "        const { completion } = await bedrockHandler.processResponse(",
+                                "            response,",
+                                "            slackEvent.channel,",
+                                "            slackToken,",
+                                "            slackEvent.thread_ts || slackEvent.ts,",
+                                "            processingMessageId",
+                                "        );",
+                                "",
+                                "        await sendFinalResponse(",
+                                "            completion,",
+                                "            slackEvent,",
+                                "            slackToken,",
+                                "            processingMessageId",
+                                "        );",
+                                "",
+                                "        logger.info('Successfully processed record:', {",
+                                "            recordId: record.messageId,",
+                                "            channel: slackEvent.channel,",
+                                "            threadTs: slackEvent.thread_ts || slackEvent.ts",
+                                "        });",
+                                "",
+                                "    } catch (error) {",
+                                "        logger.error('Error processing record:', {",
+                                "            recordId: record.messageId,",
+                                "            error: error.message,",
+                                "            stack: error.stack",
+                                "        });",
+                                "",
+                                "        // Attempt to send error message to Slack",
+                                "        try {",
+                                "            const payload = JSON.parse(record.body);",
+                                "            const { event: slackEvent, slackToken, ackMessage } = payload;",
+                                "            ",
+                                "            if (slackEvent && slackToken) {",
+                                "                await sendErrorMessage(",
+                                "                    slackEvent.channel,",
+                                "                    error,",
+                                "                    slackToken,",
+                                "                    slackEvent.thread_ts || slackEvent.ts,",
+                                "                    ackMessage?.ts",
+                                "                );",
+                                "            }",
+                                "        } catch (sendError) {",
+                                "            logger.error('Failed to send error message to Slack:', {",
+                                "                originalError: error.message,",
+                                "                sendError: sendError.message",
+                                "            });",
+                                "        }",
+                                "",
+                                "        // Re-throw the error to be handled by Promise.allSettled",
+                                "        throw error;",
+                                "    }",
+                                "}",
+                                "",
+                                "// Error message handling",
+                                "async function sendErrorMessage(channel, error, slackToken, threadTs, ackMessageTs) {",
+                                "    const errorMessage = `❌ *Error:* ${error.message || 'An unexpected error occurred'}`;",
+                                "    ",
+                                "    try {",
+                                "        if (process.env.SEND_AGENT_RATIONALE_TO_SLACK === 'true') {",
+                                "            await slackClient.sendMessage(channel, errorMessage, slackToken, threadTs);",
+                                "        } else {",
+                                "            await slackClient.updateMessage(channel, errorMessage, slackToken, ackMessageTs, threadTs);",
+                                "        }",
+                                "    } catch (error) {",
+                                "        logger.error('Failed to send/update error message:', {",
+                                "            channel,",
+                                "            error: error.message",
+                                "        });",
+                                "        throw error;",
+                                "    }",
+                                "}",
+                                "",
+                                "// Main Lambda handler ",
+                                "exports.handler = async (event) => {",
+                                "    logger.info('BedrockAgentsIntegrationFunction started');",
+                                "    //logger.debug('Received event:', JSON.stringify(event, null, 2));",
+                                "",
+                                "    if (!event.Records?.length) {",
+                                "        logger.error('No records found in event');",
+                                "        return {",
+                                "            statusCode: 400,",
+                                "            body: JSON.stringify({ error: 'No records found in event' })",
+                                "        };",
+                                "    }",
+                                "",
+                                "    try {",
+                                "        const results = await Promise.allSettled(event.Records.map(processRecord));",
+                                "        ",
+                                "        // Log results of all operations",
+                                "        results.forEach((result, index) => {",
+                                "            if (result.status === 'rejected') {",
+                                "                logger.error(`Record ${index} failed:`, {",
+                                "                    error: result.reason.message,",
+                                "                    stack: result.reason.stack",
+                                "                });",
+                                "            }",
+                                "        });",
+                                "",
+                                "        // Check if any records were processed successfully",
+                                "        const hasSuccessfulRecords = results.some(result => result.status === 'fulfilled');",
+                                "        ",
+                                "        if (!hasSuccessfulRecords) {",
+                                "            logger.error('All records failed processing');",
+                                "            return {",
+                                "                statusCode: 500,",
+                                "                body: JSON.stringify({ error: 'All records failed processing' })",
+                                "            };",
+                                "        }",
+                                "",
+                                "        logger.info('BedrockAgentsIntegrationFunction completed');",
+                                "        return {",
+                                "            statusCode: 200,",
+                                "            body: JSON.stringify({ ",
+                                "                message: 'Processing completed',",
+                                "                results: results.map(r => r.status)",
+                                "            })",
+                                "        };",
+                                "",
+                                "    } catch (error) {",
+                                "        logger.error('Fatal error:', {",
+                                "            error: error.message,",
+                                "            stack: error.stack",
+                                "        });",
+                                "        throw error;",
+                                "    }",
+                                "};"
+                            ]
+                        ]
+                    }
+                },
+                "Runtime": "nodejs20.x",
+                "Timeout": 240,
+                "MemorySize": 256,
+                "Environment": {
+                    "Variables": {
+                        "BEDROCK_AGENT_ID": {
+                            "Ref": "BedrockAgentId"
+                        },
+                        "BEDROCK_AGENT_ALIAS_ID": {
+                            "Ref": "BedrockAgentAliasId"
+                        },
+                        "SEND_AGENT_RATIONALE_TO_SLACK": {
+                            "Ref": "SendAgentRationaleToSlack"
+                        }
+                    }
+                }
+            }
+        },
+        "ProcessingLambdaEventSourceMapping": {
+            "Type": "AWS::Lambda::EventSourceMapping",
+            "Properties": {
+                "BatchSize": 1,
+                "Enabled": true,
+                "EventSourceArn": { "Fn::GetAtt": ["ProcessingQueue", "Arn"] },
+                "FunctionName": { "Ref": "BedrockAgentsIntegrationFunction" }
+            }
+        }
+    },
+    "Outputs": {
+        "WebhookURL": {
+            "Description": "Webhook URL for Slack",
+            "Value": {
+                "Fn::Sub": "https://${SlackAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/slack"
+            }
+        }
+    }
+}
