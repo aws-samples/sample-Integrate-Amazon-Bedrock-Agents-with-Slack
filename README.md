@@ -1,3 +1,6 @@
+> [!NOTE]
+> The content presented here serves as an example intended solely for educational objectives and should not be implemented in a live production environment without proper modifications and rigorous testing.
+
 # Integrate Amazon Bedrock Agents with Slack
 
 As companies increasingly adopt [generative AI](https://aws.amazon.com/ai/generative-ai/) applications, AI agents capable of delivering tangible business value have emerged as a crucial component. In this context, integrating custom-built AI agents within chat services such as [Slack](https://slack.com/) can be transformative, providing businesses with seamless access to AI assistants powered by sophisticated [foundation models (FMs)](https://aws.amazon.com/what-is/foundation-models/). After an AI agent is developed, the next challenge lies in incorporating it in a way that provides straightforward and efficient use. Organizations have several options: integration into existing web applications, [development of custom frontend interfaces](https://github.com/aws-samples/sample-cognito-integrated-bedrock-agents-chat-ui), or integration with communication services such as Slack. The third option—integrating custom AI agents with Slack—offers a simpler and quicker implementation path you can follow to summon the AI agent on-demand within your familiar work environment.
