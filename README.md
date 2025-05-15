@@ -120,7 +120,7 @@ If you already have an Amazon Bedrock agent configured, you can copy its [ID](ht
 
 Choose **Launch Stack** to deploy the resources:
 
-![cloudformation-launch-stack-slack-bedrockagent-integration](https://github.com/user-attachments/assets/40794da7-084d-4dcc-a160-993a9f1a8c27)
+[![cloudformation-launch-stack-slack-bedrockagent-integration](https://github.com/user-attachments/assets/2d5c3173-7f45-4a32-9e49-2e436573883e)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/new?stackName=virtual-meteorologist&templateURL=https://aws-blogs-artifacts-public.s3.us-east-1.amazonaws.com/artifacts/ML-18564/cfn-virtual-meteorologist-agent.yaml)
 
 After deployment is complete, navigate to the **Outputs** tab and copy the `BedrockAgentId` and `BedrockAgentAliasID` values. Save these to a notepad to use later when deploying the Slack integration to Amazon Bedrock Agents CloudFormation template.
 
@@ -152,7 +152,8 @@ When you run the CloudFormation template to integrate Slack with Amazon Bedrock 
 
 Choose **Launch Stack** to deploy these resources:
 
-![cloudformation-launch-stack-slack-bedrockagent-integration](https://github.com/user-attachments/assets/2d5c3173-7f45-4a32-9e49-2e436573883e)
+[![cloudformation-launch-stack-slack-bedrockagent-integration](https://github.com/user-attachments/assets/2d5c3173-7f45-4a32-9e49-2e436573883e)](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/new?stackName=slack-bedrock-agent-integration&templateURL=https://aws-blogs-artifacts-public.s3.us-east-1.amazonaws.com/artifacts/ML-18564/cfn-amazon-bedrock-agents-slack-integration.json)
+
 
 Provide your preferred stack name. When deploying the CloudFormation template, you’ll need to provide four values: the Slack bot user OAuth token, the signing secret from your Slack configuration, and the `BedrockAgentId` and `BedrockAgentAliasID` values saved earlier. If your agent is in [draft version](https://docs.aws.amazon.com/bedrock/latest/userguide/deploy-agent.html), use `TSTALIASID` as the `BedrockAgentAliasID`. Although our example uses a draft version, you can use the alias ID of your published version if you’ve already published your agent.
 
