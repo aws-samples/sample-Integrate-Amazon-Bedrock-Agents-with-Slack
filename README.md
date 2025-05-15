@@ -3,6 +3,23 @@
 
 # Integrate Amazon Bedrock Agents with Slack
 
+- 📋 [Overview](#overview)
+- 🏗️ [Solution Overview](#solution-overview)
+- ✅ [Prerequisites](#prerequisites)
+- 🔗 [Create a Slack application in your workspace](#create-a-slack-application-in-your-workspace)
+- 🚀 [Deploy the sample Amazon Bedrock agent resources with AWS CloudFormation](#deploy-the-sample-amazon-bedrock-agent-resources-with-aws-cloudformation)
+- 🔄 [Deploy the Slack integration to Amazon Bedrock Agents resources with AWS CloudFormation](#deploy-the-slack-integration-to-amazon-bedrock-agents-resources-with-aws-cloudformation)
+- 🔌 [Integrate Amazon Bedrock Agents with your Slack workspace](#integrate-amazon-bedrock-agents-with-your-slack-workspace)
+- 🧪 [Test the Amazon Bedrock Agents bot application in Slack](#test-the-amazon-bedrock-agents-bot-application-in-slack)
+- 🧹 [Clean Up](#clean-up)
+- 💡 [Considerations](#considerations)
+- 📝 [Summary](#summary)
+- 📚 [Additional Resources](#additional-resources)
+- 👥 [Authors](#authors)
+- 🔒 [Security](#security)
+
+## Overview
+
 As companies increasingly adopt [generative AI](https://aws.amazon.com/ai/generative-ai/) applications, AI agents capable of delivering tangible business value have emerged as a crucial component. In this context, integrating custom-built AI agents within chat services such as [Slack](https://slack.com/) can be transformative, providing businesses with seamless access to AI assistants powered by sophisticated [foundation models (FMs)](https://aws.amazon.com/what-is/foundation-models/). After an AI agent is developed, the next challenge lies in incorporating it in a way that provides straightforward and efficient use. Organizations have several options: integration into existing web applications, [development of custom frontend interfaces](https://github.com/aws-samples/sample-cognito-integrated-bedrock-agents-chat-ui), or integration with communication services such as Slack. The third option—integrating custom AI agents with Slack—offers a simpler and quicker implementation path you can follow to summon the AI agent on-demand within your familiar work environment.
 
 This solution drives team productivity through faster query responses and automated task handling, while minimizing operational overhead. The pay-per-use model optimizes cost as your usage scales, making it particularly attractive for organizations starting their AI journey or expanding their existing capabilities.
@@ -222,3 +239,17 @@ To learn more about building Amazon Bedrock Agents, refer to the following resou
 - [Build a FinOps agent using Amazon Bedrock with multi-agent capability and Amazon Nova as the foundation model](https://aws.amazon.com/blogs/machine-learning/build-a-finops-agent-using-amazon-bedrock-with-multi-agent-capability-and-amazon-nova-as-the-foundation-model/)
 - [Building a virtual meteorologist using Amazon Bedrock Agents](https://aws.amazon.com/blogs/machine-learning/building-a-virtual-meteorologist-using-amazon-bedrock-agents/)
 - [Build a gen AI–powered financial assistant with Amazon Bedrock multi-agent collaboration](https://aws.amazon.com/blogs/machine-learning/build-a-gen-ai-powered-financial-assistant-with-amazon-bedrock-multi-agent-collaboration/)
+
+## Authors
+- Sergio Barraza
+- Salman Ahmed
+- Ravi Kumar
+- Ankush Goyal  
+
+## Security
+
+See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+
+## License
+
+This library is licensed under the MIT-0 License. See the LICENSE file.
