@@ -30,7 +30,7 @@ These AI-powered solutions enhance user experience through contextual conversati
 
 In this post, we present a solution to incorporate [Amazon Bedrock Agents](https://aws.amazon.com/bedrock/agents/) in your Slack workspace. We guide you through configuring a Slack workspace, deploying integration components in [Amazon Web Services](https://aws.amazon.com/) (AWS), and using this solution.
 
-## Solution Overview
+## Solution Overvie
 
 The solution consists of two main components: the Slack to Amazon Bedrock Agents integration infrastructure and either your existing [Amazon Bedrock](https://aws.amazon.com/bedrock/) agent or a sample agent we provide for testing. The integration infrastructure handles the communication between Slack and the Amazon Bedrock agent, and the agent processes and responds to the queries.
 
