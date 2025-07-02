@@ -241,6 +241,7 @@ To learn more about building Amazon Bedrock Agents, refer to the following resou
 - [Build a gen AI–powered financial assistant with Amazon Bedrock multi-agent collaboration](https://aws.amazon.com/blogs/machine-learning/build-a-gen-ai-powered-financial-assistant-with-amazon-bedrock-multi-agent-collaboration/)
 
 ## Authors
+
 - Sergio Barraza
 - Salman Ahmed
 - Ravi Kumar
